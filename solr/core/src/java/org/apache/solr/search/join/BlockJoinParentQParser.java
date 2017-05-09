@@ -20,6 +20,8 @@ import java.io.IOException;
 import java.util.Objects;
 
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.DocIdSet;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
@@ -47,6 +49,10 @@ public class BlockJoinParentQParser extends QParser {
     return "which";
   }
 
+  private String getChildFilterLocalParamName() {
+    return "filters";
+  }
+
   BlockJoinParentQParser(String qstr, SolrParams localParams, SolrParams params, SolrQueryRequest req) {
     super(qstr, localParams, params, req);
   }
@@ -55,8 +61,7 @@ public class BlockJoinParentQParser extends QParser {
   public Query parse() throws SyntaxError {
     String filter = localParams.get(getParentFilterLocalParamName());
     String scoreMode = localParams.get("score", ScoreMode.None.name());
-    QParser parentParser = subQuery(filter, null);
-    Query parentQ = parentParser.getQuery();
+    Query parentQ = parseQuery(filter);
 
     String queryText = localParams.get(QueryParsing.V);
     // there is no child query, return parent filter from cache
@@ -65,9 +70,31 @@ public class BlockJoinParentQParser extends QParser {
                   wrapped.setCache(false);
                   return wrapped;
     }
-    QParser childrenParser = subQuery(queryText, null);
-    Query childrenQuery = childrenParser.getQuery();
+    Query childrenQuery = createChildrenQuery(queryText);
     return createQuery(parentQ, childrenQuery, scoreMode);
+  }
+
+  private Query parseQuery(String queryText) throws SyntaxError {
+    QParser parentParser = subQuery(queryText, null);
+    return parentParser.getQuery();
+  }
+
+  private Query createChildrenQuery(String queryText) throws SyntaxError {
+    Query primaryChildrenQuery = parseQuery(queryText);
+    Query result;
+    String[] childFilters = localParams.getParams(getChildFilterLocalParamName());
+    if (childFilters == null) {
+      result = primaryChildrenQuery;
+    } else {
+      BooleanQuery.Builder builder = new BooleanQuery.Builder();
+      builder.add( primaryChildrenQuery, BooleanClause.Occur.MUST);
+      for (String childFilter : childFilters) {
+        Query childFilterQuery = parseQuery(childFilter);
+        builder.add(childFilterQuery, BooleanClause.Occur.MUST);
+      }
+      result = builder.build();
+    }
+    return result;
   }
 
   protected Query createQuery(final Query parentList, Query query, String scoreMode) throws SyntaxError {
